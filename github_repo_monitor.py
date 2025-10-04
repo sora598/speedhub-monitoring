@@ -2,6 +2,8 @@ import requests
 import time
 from datetime import datetime, timezone, timedelta
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # === Configuration ===
 GITHUB_API_URL = "https://api.github.com/repos/AhmadV99/Script-Games/commits?path=Grow%20a%20Garden.lua"
