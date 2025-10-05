@@ -174,7 +174,8 @@ def run_merchant_monitor():
                 "🧳 Traveling Merchant is Now Active!",
                 f"**Merchant:** {merchant_name}",
                 color=0xF1C40F,
-                fields=fields
+                fields=fields,
+                mention="@everyone"
             )
     else:
         if last_status and last_status.get("status") == "active":
