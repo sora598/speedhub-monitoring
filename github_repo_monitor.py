@@ -20,12 +20,13 @@ DISCORD_WEBHOOK_MERCHANT = os.getenv("DISCORD_WEBHOOK_MERCHANT")
 # GAG API
 API_URL_GAG = "https://gagstock.gleeze.com/grow-a-garden"
 
-# Shared check interval (seconds)
-CHECK_INTERVAL = 10 * 60  # every 10 minutes
+# Interval
+CHECK_INTERVAL = 10 * 60  # 10 minutes
 
 # Storage files
 LAST_COMMIT_FILE = "last_commit.json"
 LAST_MERCHANT_FILE = "last_merchant_status.json"
+
 
 # ============ UTILITY FUNCTIONS ============
 def get_ph_time(utc_time_str):
@@ -66,7 +67,9 @@ def send_discord_embed(webhook_url, title, description, color=0x00FFAA, fields=N
         embed["fields"] = fields
     payload = {"embeds": [embed]}
     resp = requests.post(webhook_url, json=payload)
-    print(f"📨 Sent Discord embed ({resp.status_code})")
+    print(f"📨 Discord embed sent ({resp.status_code})")
+    return resp.status_code == 204 or resp.status_code == 200
+
 
 # ============ GITHUB MONITOR ============
 def check_github_updates():
@@ -95,7 +98,7 @@ def run_github_monitor():
     last_commit = load_json(LAST_COMMIT_FILE)
     latest = check_github_updates()
     if not latest:
-        print("No GitHub commits found.")
+        print("⚠️ No GitHub commits found.")
         return
 
     if not last_commit or last_commit["sha"] != latest["sha"]:
@@ -113,21 +116,18 @@ def run_github_monitor():
             f"⏱️ {relative}"
         )
 
-        send_discord_embed(
+        print("🚨 New GitHub commit detected!")
+        if send_discord_embed(
             DISCORD_WEBHOOK_GITHUB,
             "🚨 New Commit Detected on Grow a Garden.lua",
             description,
             color=0x00BFFF
-        )
-
+        ):
+            print("✅ GitHub commit embed sent successfully.")
         save_json(LAST_COMMIT_FILE, latest)
     else:
-        send_discord_embed(
-            DISCORD_WEBHOOK_GITHUB,
-            "✅ No Update Detected",
-            "No new commits since last check.",
-            color=0x2ECC71
-        )
+        print("✅ No new GitHub commits since last check.")
+
 
 # ============ MERCHANT MONITOR ============
 def check_merchant():
@@ -146,54 +146,90 @@ def run_merchant_monitor():
     """Check traveling merchant status and notify Discord."""
     last_status = load_json(LAST_MERCHANT_FILE)
     data = check_merchant()
+
     if not data:
-        print("No merchant data.")
+        print("⚠️ No merchant data received.")
         return
 
-    tm = data.get("data", {}).get("travelingmerchant", {})
-    status = tm.get("status")
-    merchant_name = tm.get("merchantName", "Unknown")
-    items = tm.get("items", [])
-    appear_in = tm.get("appearIn", "N/A")
+    # Ensure the JSON contains the expected structure
+    merchant_data = data.get("data", {}).get("travelingmerchant")
+    if not merchant_data:
+        print("⚠️ Invalid JSON structure — 'travelingmerchant' not found.")
+        return
 
+    # Extract relevant info
+    status = str(merchant_data.get("status", "")).lower()
+    merchant_name = merchant_data.get("merchantName", "Unknown")
+    items = merchant_data.get("items", [])
+    appear_in = merchant_data.get("appearIn", "N/A")
+
+    print(f"📦 Merchant check → Name: {merchant_name}, Status: {status}, Items: {len(items)}")
+
+    # Detect if status changed since last run
+    last_status_val = (last_status or {}).get("status", "")
+    if last_status_val == status:
+        print("✅ Merchant status unchanged since last check.")
+        return
+
+    # If merchant is active — send Discord embed
     if status == "active":
-        if not last_status or last_status.get("status") != "active":
-            fields = []
-            for item in items:
-                name = item.get("name", "")
-                qty = item.get("quantity", "")
-                emoji = item.get("emoji", "")
-                fields.append({
-                    "name": f"{emoji} {name}",
-                    "value": f"Quantity: `{qty}`",
-                    "inline": True
-                })
+        print("🧳 Merchant is active.")
+        fields = []
+        for item in items:
+            name = item.get("name", "")
+            qty = item.get("quantity", "")
+            emoji = item.get("emoji", "")
+            fields.append({
+                "name": f"{emoji} {name}",
+                "value": f"Quantity: `{qty}`",
+                "inline": True
+            })
 
-            send_discord_embed(
-                DISCORD_WEBHOOK_MERCHANT,
-                "🧳 Traveling Merchant is Now Active!",
-                f"**Merchant:** {merchant_name}",
-                color=0xF1C40F,
-                fields=fields,
-                mention="@everyone"
-            )
+        sent = send_discord_embed(
+            DISCORD_WEBHOOK_MERCHANT,
+            "🧳 Traveling Merchant is Now Active!",
+            f"**Merchant:** {merchant_name}\n⏱️ Appears in: `{appear_in}`",
+            color=0xF1C40F,
+            fields=fields
+        )
+        if sent:
+            print("✅ Merchant embed sent successfully.")
     else:
-        if last_status and last_status.get("status") == "active":
-            send_discord_embed(
-                DISCORD_WEBHOOK_MERCHANT,
-                "❌ Traveling Merchant Left",
-                f"{merchant_name} is no longer active.\nWill appear again in `{appear_in}`.",
-                color=0xFF5555
-            )
+        print(f"❌ Merchant inactive or left (Status: {status}).")
 
+    # Save latest merchant status
     save_json(LAST_MERCHANT_FILE, {"status": status, "merchantName": merchant_name})
+
+
+
+# ============ TIMING HANDLER ============
+def get_seconds_until_next_10min():
+    """Align checks to the next :00, :10, :20, etc."""
+    now = datetime.now()
+    minutes = now.minute
+    next_minute = ((minutes // 10) + 1) * 10
+    if next_minute == 60:
+        next_minute = 0
+        next_hour = now.hour + 1
+    else:
+        next_hour = now.hour
+    next_time = now.replace(hour=next_hour % 24, minute=next_minute, second=0, microsecond=0)
+    delta = (next_time - now).total_seconds()
+    if delta <= 0:
+        delta += 600  # fallback if missed
+    return delta, next_time
+
 
 # ============ MAIN LOOP ============
 if __name__ == "__main__":
-    print("🚀 Starting GitHub + GAG Monitor\n")
+    print("🚀 Starting GitHub + Merchant Monitor")
+    print(f"🕓 Current Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
     while True:
         print(f"⏰ Running checks at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         run_github_monitor()
         run_merchant_monitor()
-        print(f"💤 Sleeping for {CHECK_INTERVAL / 60:.0f} minutes...\n")
-        time.sleep(CHECK_INTERVAL)
+
+        wait_sec, next_run = get_seconds_until_next_10min()
+        print(f"💤 Waiting {int(wait_sec)}s until next check at {next_run.strftime('%H:%M:%S')}...\n")
+        time.sleep(wait_sec)
