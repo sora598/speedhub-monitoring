@@ -1,171 +1,198 @@
-import requests
-import time
-from datetime import datetime, timezone, timedelta
 import os
+import time
+import json
+import requests
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+
+# ============ CONFIGURATION ============
 load_dotenv()
 
-# === Configuration ===
-GITHUB_API_URL = "https://api.github.com/repos/AhmadV99/Script-Games/commits?path=Grow%20a%20Garden.lua"
-DISCORD_WEBHOOK = os.getenv("WEBHOOK")
-CHECK_INTERVAL = 10 * 60  # 10 minutes (use 60 for testing)
-STORAGE_FILE = "last_commit.txt"
+# GitHub info
+GITHUB_REPO = "AhmadV99/Script-Games"
+GITHUB_FILE_PATH = "Grow a Garden.lua"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits?path={GITHUB_FILE_PATH}"
 
-# === Time helpers ===
-def utc_to_ph(utc_time):
-    """Convert UTC datetime to Philippine Time (UTC+8)."""
-    return utc_time.astimezone(timezone(timedelta(hours=8)))
+# Webhooks (stored safely in .env)
+DISCORD_WEBHOOK_GITHUB = os.getenv("DISCORD_WEBHOOK_GITHUB")
+DISCORD_WEBHOOK_MERCHANT = os.getenv("DISCORD_WEBHOOK_MERCHANT")
 
-def format_datetime(dt):
-    """Format datetime as YYYY-MM-DD HH:MM AM/PM"""
-    return dt.strftime("%Y-%m-%d %I:%M %p")
+# GAG API
+API_URL_GAG = "https://gagstock.gleeze.com/grow-a-garden"
 
-# === File helpers ===
-def load_last_commit():
-    """Read last saved commit SHA from file."""
-    if not os.path.exists(STORAGE_FILE):
-        return None
-    with open(STORAGE_FILE, "r") as f:
-        return f.read().strip() or None
-def get_relative_time(dt):
-    """Get relative time string for Discord."""
-    timestamp = int(dt.timestamp())
+# Shared check interval (seconds)
+CHECK_INTERVAL = 10 * 60  # every 10 minutes
+
+# Storage files
+LAST_COMMIT_FILE = "last_commit.json"
+LAST_MERCHANT_FILE = "last_merchant_status.json"
+
+# ============ UTILITY FUNCTIONS ============
+def get_ph_time(utc_time_str):
+    """Convert UTC string to PH time."""
+    utc_time = datetime.strptime(utc_time_str, "%Y-%m-%dT%H:%M:%SZ")
+    ph_time = utc_time + timedelta(hours=8)
+    return ph_time.strftime("%Y-%m-%d %H:%M:%S")
+
+def get_relative_time(dt: datetime):
+    """Return Discord-formatted relative time."""
+    timestamp = int(dt.replace(tzinfo=timezone.utc).timestamp())
     return f"<t:{timestamp}:R>"
 
-def save_last_commit(sha):
-    """Save the latest commit SHA to file."""
-    with open(STORAGE_FILE, "w") as f:
-        f.write(sha)
+def load_json(file):
+    """Safely load JSON from file."""
+    if os.path.exists(file):
+        try:
+            with open(file, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return None
+    return None
 
-# === Helper: Fetch latest commit info ===
-def get_latest_commit():
+def save_json(file, data):
+    """Write JSON to file."""
+    with open(file, "w") as f:
+        json.dump(data, f, indent=2)
+
+def send_discord_embed(webhook_url, title, description, color=0x00FFAA, fields=None):
+    """Send an embedded message to Discord."""
+    embed = {
+        "title": title,
+        "description": description,
+        "color": color,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    if fields:
+        embed["fields"] = fields
+    payload = {"embeds": [embed]}
+    resp = requests.post(webhook_url, json=payload)
+    print(f"📨 Sent Discord embed ({resp.status_code})")
+
+# ============ GITHUB MONITOR ============
+def check_github_updates():
+    """Fetch latest commit info from GitHub."""
     try:
-        response = requests.get(GITHUB_API_URL)
-        data = response.json()
-        if not data or "message" in data:
-            print("❌ Error fetching commit data.")
-            return None, None
-        latest_commit = data[0]
-        sha = latest_commit["sha"]
-        commit_time_str = latest_commit["commit"]["committer"]["date"]
-        commit_time_utc = datetime.strptime(commit_time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        return sha, commit_time_utc
+        resp = requests.get(GITHUB_API_URL, timeout=10)
+        if resp.status_code != 200:
+            print(f"❌ GitHub request failed: {resp.status_code}")
+            return None
+        commits = resp.json()
+        if not commits:
+            return None
+        latest = commits[0]
+        return {
+            "sha": latest["sha"],
+            "author": latest["commit"]["author"]["name"],
+            "date": latest["commit"]["author"]["date"],
+            "message": latest["commit"]["message"]
+        }
     except Exception as e:
-        print("❌ Error:", e)
-        return None, None
+        print("⚠️ GitHub error:", e)
+        return None
 
-# === Helper: Send message to Discord ===
-def send_discord_message(message):
-    payload = {"content": message}
-    resp = requests.post(DISCORD_WEBHOOK, json=payload)
-    print(f"[Discord] Status: {resp.status_code}")
+def run_github_monitor():
+    """Compare and send updates if new commit found."""
+    last_commit = load_json(LAST_COMMIT_FILE)
+    latest = check_github_updates()
+    if not latest:
+        print("No GitHub commits found.")
+        return
 
-# === Main Program ===
-print("🔍 Starting GitHub file monitor...")
-print("📁 Target file: Grow a Garden.lua")
+    if not last_commit or last_commit["sha"] != latest["sha"]:
+        utc_time = latest["date"]
+        ph_time = get_ph_time(utc_time)
+        utc_dt = datetime.strptime(utc_time, "%Y-%m-%dT%H:%M:%SZ")
+        relative = get_relative_time(utc_dt)
 
-# Load previously saved commit
-stored_commit = load_last_commit()
-if stored_commit:
-    print(f"📄 Stored last commit: {stored_commit}")
-else:
-    print("📄 No stored commit found (first run).")
-
-# Get the latest commit from GitHub
-latest_commit, latest_commit_utc = get_latest_commit()
-if not latest_commit:
-    print("❌ Could not retrieve initial commit.")
-    exit()
-
-latest_commit_ph = utc_to_ph(latest_commit_utc)
-current_utc = datetime.now(timezone.utc)
-current_ph = utc_to_ph(current_utc)
-
-# === Display info ===
-print(f"✅ Latest commit SHA: {latest_commit}\n")
-print("🕒 Last commit time:")
-print(f"📅 PH:  {format_datetime(latest_commit_ph)}")
-print(f"🌐 UTC: {format_datetime(latest_commit_utc)}\n")
-
-print("⌚ Current time:")
-print(f"📅 PH:  {format_datetime(current_ph)}")
-print(f"🌐 UTC: {format_datetime(current_utc)}")
-
-# === Compare with stored commit ===
-if stored_commit != latest_commit:
-    print("🔔 Detected new commit since last check!")
-    send_discord_message(
-        f"@everyone 🚨 **New commit detected since last session!**\n"
-        f"SHA: `{latest_commit}`\n\n"
-        f"🕒 **Last commit time:**\n"
-        f"📅 PH:  {format_datetime(latest_commit_ph)}\n"
-        f"🌐 UTC: {format_datetime(latest_commit_utc)}\n\n"
-        f"⌚ **Current time:**\n"
-        f"📅 PH:  {format_datetime(current_ph)}\n"
-        f"🌐 UTC: {format_datetime(current_utc)}\n\n"
-        f"🔗 https://github.com/AhmadV99/Script-Games/commits/main/Grow%20a%20Garden.lua"
-        f"\n⌚ **Time checked: {get_relative_time(current_ph)} **"
-    )
-    save_last_commit(latest_commit)
-else:
-    print("ℹ️ No new updates since last session.")
-    send_discord_message(
-        f"✅ Latest commit SHA: `{latest_commit}`\n\n"
-        f"🕒 **Last commit time:**\n"
-        f"📅 PH:  {format_datetime(latest_commit_ph)}\n"
-        f"🌐 UTC: {format_datetime(latest_commit_utc)}\n\n"
-        f"⌚ **Current time:**\n"
-        f"📅 PH:  {format_datetime(current_ph)}\n"
-        f"🌐 UTC: {format_datetime(current_utc)}\n\n"
-        f"_No update so far._"
-        f"\n⌚ **Time checked: {get_relative_time(current_ph)} **"
-    )
-
-
-# === Fix the time interval ===
-time_executed  = datetime.now().minute
-if time_executed % 10 != 0:
-    time.sleep((10 - (time_executed % 10)) * 60)
-
-# === Continuous monitor loop ===
-while True:
-    time.sleep(CHECK_INTERVAL)
-    new_commit, new_commit_utc = get_latest_commit()
-
-    if not new_commit:
-        print("⚠️ Could not fetch new commit data. Retrying later...")
-        continue
-
-    if new_commit != latest_commit:
-        print("🔔 New commit detected during monitoring!")
-
-        new_commit_ph = utc_to_ph(new_commit_utc)
-        current_utc = datetime.now(timezone.utc)
-        current_ph = utc_to_ph(current_utc)
-
-        message = (
-            f"@everyone 🚨 **New commit detected!**\n"
-            f"SHA: `{new_commit}`\n\n"
-            f"🕒 **Last commit time:**\n"
-            f"📅 PH:  {format_datetime(new_commit_ph)}\n"
-            f"🌐 UTC: {format_datetime(new_commit_utc)}\n\n"
-            f"⌚ **Current time:**\n"
-            f"📅 PH:  {format_datetime(current_ph)}\n"
-            f"🌐 UTC: {format_datetime(current_utc)}\n\n"
-            f"🔗 https://github.com/AhmadV99/Script-Games/commits/main/Grow%20a%20Garden.lua"
-            f"\n⌚ **Time checked: {get_relative_time(current_ph)} **"
+        description = (
+            f"🧠 **Message:** {latest['message']}\n"
+            f"👤 **Author:** {latest['author']}\n\n"
+            f"🕒 **Last Commit Time:**\n"
+            f"• UTC: `{utc_time}`\n"
+            f"• PH: `{ph_time}`\n"
+            f"⏱️ {relative}"
         )
-        send_discord_message(message)
 
-        # Update stored values
-        save_last_commit(new_commit)
-        latest_commit, latest_commit_utc = new_commit, new_commit_utc
+        send_discord_embed(
+            DISCORD_WEBHOOK_GITHUB,
+            "🚨 New Commit Detected on Grow a Garden.lua",
+            description,
+            color=0x00BFFF
+        )
+
+        save_json(LAST_COMMIT_FILE, latest)
     else:
-        print("⏳ No new updates.")
-        send_discord_message(
-        f"ℹ️**No update so far**\n"
-        f"**Last commit was at**:\n"
-        f"PH: {format_datetime(utc_to_ph(latest_commit_utc))}\n"
-        f"UTC: {format_datetime(latest_commit_utc)}\n\n"
-        f"\n⌚ **Time checked: {get_relative_time(current_ph)} **"
+        send_discord_embed(
+            DISCORD_WEBHOOK_GITHUB,
+            "✅ No Update Detected",
+            "No new commits since last check.",
+            color=0x2ECC71
         )
+
+# ============ MERCHANT MONITOR ============
+def check_merchant():
+    """Fetch traveling merchant info from GAG API."""
+    try:
+        resp = requests.get(API_URL_GAG, timeout=10)
+        if resp.status_code != 200:
+            print(f"❌ GAG API failed: {resp.status_code}")
+            return None
+        return resp.json()
+    except Exception as e:
+        print("⚠️ Merchant check error:", e)
+        return None
+
+def run_merchant_monitor():
+    """Check traveling merchant status and notify Discord."""
+    last_status = load_json(LAST_MERCHANT_FILE)
+    data = check_merchant()
+    if not data:
+        print("No merchant data.")
+        return
+
+    tm = data.get("data", {}).get("travelingmerchant", {})
+    status = tm.get("status")
+    merchant_name = tm.get("merchantName", "Unknown")
+    items = tm.get("items", [])
+    appear_in = tm.get("appearIn", "N/A")
+
+    if status == "active":
+        if not last_status or last_status.get("status") != "active":
+            fields = []
+            for item in items:
+                name = item.get("name", "")
+                qty = item.get("quantity", "")
+                emoji = item.get("emoji", "")
+                fields.append({
+                    "name": f"{emoji} {name}",
+                    "value": f"Quantity: `{qty}`",
+                    "inline": True
+                })
+
+            send_discord_embed(
+                DISCORD_WEBHOOK_MERCHANT,
+                "🧳 Traveling Merchant is Now Active!",
+                f"**Merchant:** {merchant_name}",
+                color=0xF1C40F,
+                fields=fields
+            )
+    else:
+        if last_status and last_status.get("status") == "active":
+            send_discord_embed(
+                DISCORD_WEBHOOK_MERCHANT,
+                "❌ Traveling Merchant Left",
+                f"{merchant_name} is no longer active.\nWill appear again in `{appear_in}`.",
+                color=0xFF5555
+            )
+
+    save_json(LAST_MERCHANT_FILE, {"status": status, "merchantName": merchant_name})
+
+# ============ MAIN LOOP ============
+if __name__ == "__main__":
+    print("🚀 Starting GitHub + GAG Monitor\n")
+    while True:
+        print(f"⏰ Running checks at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        run_github_monitor()
+        run_merchant_monitor()
+        print(f"💤 Sleeping for {CHECK_INTERVAL / 60:.0f} minutes...\n")
+        time.sleep(CHECK_INTERVAL)
