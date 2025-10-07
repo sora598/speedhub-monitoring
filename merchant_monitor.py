@@ -193,9 +193,10 @@ def run_merchant_monitor():
         sent = send_discord_embed(
             DISCORD_WEBHOOK_MERCHANT,
             "🧳 Traveling Merchant is Now Active! ✅",
-            f"**Merchant:** {merchant_name}\n⏱️ Time remaining: `{time_info}`\n\n*Cross-verified by both API and WebSocket*",
+            f"**Merchant:** {merchant_name}\n⏱️ Time remaining: `{time_info}`",
             color=0xF1C40F,
-            fields=fields
+            fields=fields,
+            mention="@here"
         )
         if sent:
             print("✅ Merchant embed sent successfully to Discord.")

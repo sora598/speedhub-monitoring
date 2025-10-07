@@ -44,3 +44,19 @@ def send_discord_embed(webhook_url, title, description, color=0x00FFAA, fields=N
     resp = requests.post(webhook_url, json=payload)
     print(f"📨 Discord embed sent ({resp.status_code})")
     return resp.status_code in (200, 204)
+
+def send_discord_embed(webhook_url, title, description, color=0x00FFAA, fields=None, mention=None):
+    embed = {
+        "title": title,
+        "description": description,
+        "color": color,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    if fields:
+        embed["fields"] = fields
+    payload = {"embeds": [embed]}
+    if mention:
+        payload["content"] = mention
+    resp = requests.post(webhook_url, json=payload)
+    print(f"📨 Discord embed sent ({resp.status_code})")
+    return resp.status_code in (200, 204)

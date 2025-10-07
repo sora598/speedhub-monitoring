@@ -39,12 +39,13 @@ def run_github_monitor():
     initial_run = last_commit is None
     last_notify = (last_commit or {}).get("last_no_update_notify")
 
-    if initial_run or last_commit.get("sha") != latest["sha"]:
-        utc_time = latest["date"]
-        ph_time = get_ph_time(utc_time)
-        utc_dt = datetime.strptime(utc_time, "%Y-%m-%dT%H:%M:%SZ")
-        relative = get_relative_time(utc_dt)
+    # Format time information for the latest commit
+    utc_time = latest["date"]
+    ph_time = get_ph_time(utc_time)
+    utc_dt = datetime.strptime(utc_time, "%Y-%m-%dT%H:%M:%SZ")
+    relative = get_relative_time(utc_dt)
 
+    if initial_run or last_commit.get("sha") != latest["sha"]:
         description = (
             f"🧠 **Message:** {latest['message']}\n"
             f"👤 **Author:** {latest['author']}\n\n"
@@ -59,29 +60,43 @@ def run_github_monitor():
             DISCORD_WEBHOOK_GITHUB,
             "🚨 New Commit Detected on Grow a Garden.lua",
             description,
-            color=0x00BFFF
+            color=0x00BFFF,
+            mention="@everyone"
         ):
             print("✅ GitHub commit embed sent successfully.")
 
         save_json(LAST_COMMIT_FILE, {**latest, "last_no_update_notify": now.isoformat()})
     else:
         if initial_run:
-            print("✅ Initial run — skipping 'No update' embed.")
+            print("✅ Initial run – skipping 'No update' embed.")
             return
+        
         send_no_update = True
         if last_notify:
             last_notify_dt = datetime.fromisoformat(last_notify)
             if (now - last_notify_dt).total_seconds() < 3600:
                 send_no_update = False
+        
         if send_no_update:
             print("⏱️ No new GitHub commits in the last hour. Sending 'No update' embed.")
+            
+            # Include last commit time in "no update" embed
+            description = (
+                f"No new commits detected in the past hour.\n\n"
+                f"🕒 **Last Commit Time:**\n"
+                f"• UTC: `{utc_time}`\n"
+                f"• PH: `{ph_time}`\n"
+                f"⏱️ {relative}"
+            )
+            
             if send_discord_embed(
                 DISCORD_WEBHOOK_GITHUB,
                 "✅ GitHub Update Check",
-                "No new commits detected in the past hour.",
+                description,
                 color=0x2ECC71
             ):
                 print("✅ 'No update' embed sent successfully.")
+            
             last_commit_data = last_commit or {"sha": latest["sha"]}
             last_commit_data["last_no_update_notify"] = now.isoformat()
             save_json(LAST_COMMIT_FILE, last_commit_data)
